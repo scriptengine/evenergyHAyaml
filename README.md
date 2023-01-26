@@ -121,7 +121,7 @@ There are also binary sensors that can be tested directly:
 |binary_sensor.evenergy_charging_inprogress| true/false
 
 The binary sensors are related in the order above.
-For example if the  
+For example if the sensor: 
 
     evenergy_ev_pluggedin
 
@@ -139,7 +139,7 @@ The following sensors are related to the status of the charger:
 | ----------- | ----------- |
 sensor.evenergy_charger_chargerstatus|CONNECTED CHARGING or DISCONNECTED
 sensor.evenergy_charger_connectivity| Online
-sensor.evenergy_charger_lockmode| UNLOCKED SMART (ie Smart locked) LOCKED (Holiday lock)
+sensor.evenergy_charger_lockmode| UNLOCKED SMART (ie Smart locked) LOCKED (holiday lock)
 
 Additionally the following values are made available by the API but are more related to the installation of the charger than its use.
 
@@ -238,3 +238,4 @@ There are code snippets for the interface display in examples
 
 
 **BUG**: More examples to be added
+
