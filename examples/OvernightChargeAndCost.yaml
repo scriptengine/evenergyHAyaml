@@ -1,0 +1,15 @@
+type: entity
+entity: sensor.evenergy_energy_overnight
+name: Car
+unit: kWh
+icon: mdi:car-electric
+view_layout:
+  grid-area: CarkWh
+
+type: entity
+entity: sensor.evenergy_energy_overnightcost
+name: Charge Cost
+unit: £
+icon: hass:none
+view_layout:
+  grid-area: CarToday
