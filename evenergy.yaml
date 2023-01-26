@@ -1,0 +1,836 @@
+#Sensors and Automations for Ev.Energy managed chargers
+#Using Ev.Energy API: https://app.ev.energy/external-api.html
+
+#Author: Jeremy Pack, (scriptengine) December, 2022
+
+#PURPOSE
+#  These sensors are an attempt to represent in Home Assistant all the useful
+#  data that the Ev.Energy API makes avaiable for a domestic EV charger.
+
+#LICENSE
+#  Apache License
+#  Version 2.0, January 2004
+#  https://www.apache.org/licenses/LICENSE-2.0
+
+#LIMITATIONS
+#  The Ev.Energy API
+#  The access rights of the user in the the Ev.Energy API. This is the
+#    responsibility of Ev.Energy.
+#  No support for Solar Charging (I don't have Ev.Energy Solar Charging and have
+#   not included support for it)
+#  No support for state of charge of EV.
+#    'stateofcharge' appears to be available from the API
+#    at api/v1/vehicle-management/vehicles but I don't have what Ev.Energy
+#    considers a "smartChargingEnabled" EV to test this with.
+#    (Nissan's Leafs do not appear to have a public API Ev.Energy could use. I
+#    believe this is Nissan's failure and problem.)
+#  A limititation in HA's REST APIs:
+#   HA's REST APIs return a maxmim of 255 characters. This is
+#   insufficent to recieve the charging schedule (which is much bigger)
+#   The work around is a Python script which fetches and parses the charge
+#   schedule. This is real duplication as the script could do all of the work
+#   the REST integration is doing.
+
+#ASSUMPTIONS
+#  A user's ev.energy API key remians permentatly valid
+#  The user/ Ev.Energy user account manages a single EV charger
+
+#DEPENDANCES
+#  All users need an API key from Ev.Energy
+#  This key is specific to each user's Ev.Energy account
+#
+#  The API key needs to be defined in HA's secrets.yaml
+#  ie:
+#   config\secrets.yaml
+#  needs to exist in HA's config folder
+#  There needs to be an entry in secrets.yaml for:
+#    evenergy_Auth
+#
+#  The Ev.Energy REST API is documented and maitain by EV.Energy
+
+#DESIGN PRINCIPLEs
+#  Use the 'most native' HA functionality to make the code
+#    as clear and transparent as possible.
+#    Curl, and bash utilitys like grep, could have also
+#    been used but are much more complex for a user to understand and maintain.
+#  Copiously comment, again to help a user understand and
+#    maitain the functionality
+#  Longer, but simipler to read, functions rather than complex syntax
+#  Names that clearly document their purpose (makes them much longer, which
+#    causes different problems, sorry.)
+
+#CHANGES and UPDATES
+#2022
+#  09Dec  "V1"
+#2023
+#  23Jan  "V2"  Use new permanent user token/ secret
+
+###########
+#Check for Ev.Energy API
+###########
+binary_sensor:
+  - platform: command_line
+    command: 'curl --ssl-no-revoke -I https://app.ev.energy/o/token > /dev/null 2>&1 && echo "on" || echo "off"'
+    name: "evenergy_api_online"
+    device_class: connectivity
+    scan_interval: 60 #seconds
+    payload_on: "on"
+    payload_off: "off"
+
+#NOTE OTHER BINARY SENSORS defined at Template:
+
+#Automations
+automation:
+  - id: evenergy_atmtn_previouschargesession_chargeschedule_1
+    alias: "Ev_Energy fetch previous session charge schedule 1"
+    initial_state: true #automation is enabled
+    mode: single #do not start a new run if running (single is default)
+    trigger:
+      - platform: time_pattern
+        minutes: 10 #just in case it hasnt loaded for any reason
+    # Only charging type 'Smart' has a schedule
+    condition:
+      condition: state
+      entity_id: sensor.evenergy_previoussession_chargingtype
+      state: "smart"
+    action:
+      - service: homeassistant.update_entity
+        entity_id: sensor.evenergyprivate_previouschargesession_chargeschedule
+
+  - id: evenergy_atmtn_previouschargesession_chargescedule_2
+    alias: "Ev_Energy fetch previous session charge schedule 2"
+    initial_state: true #automation is enabled
+    mode: single #do not start a new run if running (single is default)
+    trigger:
+      - platform: state
+        entity_id: sensor.evenergy_previouschargesession_id
+        #trigger on any state change
+        to:
+      - platform: homeassistant
+        event: start
+      - platform: event
+        event_type: event_template_reloaded
+    # Only charging type 'Smart' has a schedule
+    condition:
+      - "{{states('sensor.evenergy_previoussession_chargingType') == 'smart' }}"
+    action:
+      - delay: 95 #intial rest calls plus two /logs/ refresh cycles
+      - service: homeassistant.update_entity
+        entity_id: sensor.evenergyprivate_previouschargesession_chargeschedule
+
+  - id: evenergy_atmtn_currentchargesession_chargeschedule_1
+    alias: "Ev_Energy fetch current session charge schedule 1"
+    initial_state: true #automation is enabled
+    mode: single #do not start a new run if already running (single is default)
+    trigger:
+      - platform: time_pattern
+        minutes: "/20"
+    # Only run if there is a current charge session (id > 0),
+    # and only if smart charging enabled (only smart has a schedule)
+    condition:
+      - "{{ states('sensor.evenergy_currentchargesession_id') | int(0) > 0 }}"
+      - "{{states('sensor.evenergy_currentsession_chargingType') == 'smart' }}"
+    action:
+      - service: homeassistant.update_entity
+        entity_id: sensor.evenergyprivate_currentchargesession_chargeschedule
+
+  - id: evenergy_atmtn_currentchargesession_chargeschedule_2
+    alias: "Ev_Energy fetch current session charge schedule 2"
+    trigger:
+      - platform: state
+        entity_id: sensor.evenergy_currentchargesession_id
+        #trigger on any state change
+        to:
+      - platform: homeassistant
+        event: start
+    condition:
+      - "{{ states('sensor.evenergy_currentchargesession_id') | int(0) > 0 }}"
+      - "{{ states('sensor.evenergy_currentsession_chargingType') == 'smart' }}"
+    action:
+      - delay: 95 #intial rest calls plus two /logs/ refresh cycles
+      - service: homeassistant.update_entity
+        entity_id: sensor.evenergyprivate_currentchargesession_chargeschedule
+
+#Charge schedule sensor (using python script)
+sensor:
+  # Use python_scripts/evenergycs.py to fetch and parse charging
+  # schedule (script required due to REST integration 255 character limiation)
+  - platform: command_line
+    name: evenergyprivate_previouschargesession_chargeschedule
+    scan_interval: 31536000 #1 year, is called/ triggered by automation
+    command: "python3 /config/python_scripts/evenergycs.py {{states('sensor.evenergyprivate_token')}} {{states('sensor.evenergy_previouschargesession_id')}}"
+    json_attributes:
+      - startTime
+      - endTime
+      - contiguous
+      - parsed
+    value_template: "{{ value_json.parsed }}"
+
+    #Call script to get values for *current* charge session
+    #sensor is called by automation when sensor.evenergy_currentchargesession_id is defined
+  - platform: command_line
+    name: evenergyprivate_currentchargesession_chargeschedule
+    scan_interval: 31536000 #1 year, is called/ trigger by automation
+    command: "python3 /config/python_scripts/evenergycs.py {{states('sensor.evenergyprivate_token')}} {{states('sensor.evenergy_currentchargesession_id')}}"
+    json_attributes:
+      - startTime
+      - endTime
+      - contiguous
+      - parsed
+    value_template: "{{ value_json.parsed }}"
+
+  - platform: command_line
+    name: evenergyprivate_md5
+    scan_interval: 300 #Change to 86400
+    command: "md5sum evenergy.yaml | awk '{print $1;}'"
+    #command: "md5sum /root/config/evenergy.yaml | awk '{print $1;}'"
+    #icon: mdi:fingerprint
+
+rest:
+  ###########
+  #Charger and Charger status
+  ###########
+  - resource: "https://app.ev.energy/api/v1/evse-management/evses/"
+    scan_interval: 60 #Fetch status of charger every 60 seconds
+    verify_ssl: false
+    headers:
+      Authorization: >
+        Bearer {{ states("sensor.evenergyprivate_token") }}
+    sensor:
+      - name: evenergy_evse
+        json_attributes_path: "$.results[0]"
+        json_attributes: #Capture uninteresting data as sensor attribute
+          - id
+          - modelId
+          - userId
+          - location
+          - tariffId
+          - secondaryTariffId
+          - serialNumber
+          - address
+          - postcode
+          - email
+          - make
+          - model
+          - firmware
+        value_template: "{{ value_json.results[0].connectivity}}"
+      - name: evenergy_charger_connectivity #duplicates evenergy_evse
+        value_template: "{{ value_json.results[0].connectivity}}"
+      - name: evenergy_charger_lockmode
+        icon: mdi:lock-question
+        value_template: "{{ value_json.results[0].lockMode}}"
+      - name: evenergy_charger_chargerStatus
+        value_template: "{{ value_json.results[0].chargerStatus}}"
+        #icon: mdi:cloud-question-outline #not found in database, for future
+        #icon: mdi:cloud-question-outline
+        icon: mdi:cloud-circle
+      - name: evenergy_charger_chargerstage
+        value_template: "{{ value_json.results[0].chargerStage.status}}"
+        icon: mdi:format-list-numbered
+      - name: evenergy_charger_chargerstage_date
+        value_template: "{{ value_json.results[0].chargerStage.date}}"
+        icon: mdi:clipboard-text-clock-outline
+      - name: evenergy_charger_controllable
+        value_template: "{{ value_json.results[0].controllable}}"
+        icon: mdi:wifi
+
+  ###########
+  #Current and Previous charging session IDs
+  ###########
+  # Current charge session is only defined when the charger is comment to the
+  # car. That is sensor.evenergy_charger_chargerStatus is CONNECTED
+  - resource: https://app.ev.energy/api/v1/charging-sessions/?limit=2
+    scan_interval: 30
+    verify_ssl: false
+    headers:
+      Authorization: >
+        Bearer {{ states("sensor.evenergyprivate_token") }}
+    sensor:
+      - name: evenergy_currentchargesession_id
+        json_attributes:
+          - detail #Retured on error
+        value_template: >
+          {% if value_json.results[0].end is none %}
+            {# Endtime is none when car is connected, return session id#}
+            {{ value_json.results[0].id }}
+          {% else %}
+            {# Car is not connected to charger there is not current session #}
+            {{ none }}
+          {% endif %}
+
+      - name: evenergy_previouschargesession_id
+        json_attributes:
+          - detail
+        value_template: >
+          {% if value_json.results[0].end is none %}
+            {# Endtime is none when car is connected, return second session id#}
+            {{ value_json.results[1].id }}
+          {% else %}
+            {# Car is not connected to charger there is not current session #}
+            {# Return first id [ie last charging session] #}
+            {{ value_json.results[0].id }}
+          {% endif %}
+
+  ###########
+  #Previous Charging Session
+  ###########
+  - resource_template: "https://app.ev.energy/api/v1/charging-sessions/{{states('sensor.evenergy_previouschargesession_id')}}/"
+    scan_interval: 60
+    verify_ssl: false
+    headers:
+      Authorization: >
+        Bearer {{ states("sensor.evenergyprivate_token") }}
+    sensor:
+      - name: evenergy_previoussession
+        json_attributes:
+          - vehicleId
+          - evseId
+          - siteId
+        value_template: >
+          {{ value_json.id 
+            if value_json.id is defined else none
+            }}
+      - name: evenergy_previoussession_id
+        value_template: >
+          {{ value_json.id 
+            if value_json.id is defined else none
+            }}
+      - name: evenergy_previoussession_start
+        value_template: >
+          {{ value_json.start 
+            if value_json.start is defined else none
+            }}
+      - name: evenergy_previoussession_end
+        value_template: >
+          {{ value_json.end
+            if value_json.end is defined else none
+            }}
+      #Charging mode not used as it is documented as deprecated in the
+      #Ev.Energy API open API specificaton "version: 1.0.0" (28Nov2022)
+      #https://app.ev.energy/external-api-docs-schema
+      # - name: evenergy_previoussession_chargingMode
+      #   value_template: "{{ value_json.chargingMode}}"
+      - name: evenergy_previoussession_chargingType
+        value_template: >
+          {{ value_json.chargingType 
+            if value_json.chargingType is defined else none
+            }}
+        icon: mdi:ev-plug-type2
+      - name: evenergy_previoussession_chargingStatus
+        value_template: >
+          {{ value_json.chargingStatus 
+            if value_json.chargingStatus is defined else none
+            }}
+      - name: evenergy_previoussession_totalEnergyDelivered
+        device_class: energy
+        state_class: measurement
+        unit_of_measurement: "kW"
+        icon: mdi:meter-electric-outline
+        value_template: >
+          {{ (value_json.totalEnergyDelivered | float(0)) | round(2) 
+            if value_json.totalEnergyDelivered is defined else none
+            }}
+      - name: evenergy_previoussession_totalCost
+        icon: mdi:cash
+        device_class: monetary
+        state_class: measurement
+        value_template: >
+          {{ (value_json.totalCost.value  | float(0)) | round(2) 
+            if value_json.totalCost.value  is defined else none
+            }}
+      - name: evenergy_previoussession_totalCost_currency
+        value_template: >
+          {{ value_json.totalCost.currency
+            if value_json.totalCost.currency is defined else none
+            }}
+      - name: evenergy_previoussession_totalAltCost
+        icon: mdi:cash
+        device_class: monetary
+        state_class: measurement
+        value_template: >
+          {{ (value_json.totalAltCost.value | float(0)) | round(2)
+            if value_json.totalAltCost.value is defined else none
+            }}
+      - name: evenergy_previoussession_totalCarbonEmissions
+        value_template: "{{ value_json.totalCarbonEmissions}}"
+        state_class: measurement
+        icon: mdi:molecule-co2
+      - name: evenergy_previoussession_duration
+        icon: mdi:timer-sand
+        value_template: >
+          {{ value_json.duration
+            if value_json.duration is defined else none
+            }}
+
+  # ###########
+  # #Current Charging Session
+  # ###########
+  - resource_template: "https://app.ev.energy/api/v1/charging-sessions/{{states('sensor.evenergy_currentchargesession_id')}}/"
+    scan_interval: 30 #Update very 30 seconds
+    verify_ssl: false
+    headers:
+      Authorization: >
+        Bearer {{ states("sensor.evenergyprivate_token") }}
+    sensor:
+      - name: evenergy_currentsession
+        json_attributes:
+          - vehicleId
+          - evseId
+          - siteId
+        value_template: >
+          {{ value_json.id 
+            if value_json.id is defined else none
+            }}
+      - name: evenergy_currentsession_id
+        value_template: >
+          {{ value_json.id 
+            if value_json.id is defined else none
+            }}
+      - name: evenergy_currentsession_start
+        value_template: >
+          {{ value_json.start
+            if value_json.start is defined else none
+          }}
+      - name: evenergy_currentsession_end
+        value_template: >
+          {{ none
+            if (value_json.end is undefined) or
+              (value_json.end  is none)
+            else value_json.end
+            }}
+      # Charging mode not used as it is documented as deprecated in the
+      #   Ev.Energy API open API specificaton "version: 1.0.0" (28Nov2022)
+      #   https://app.ev.energy/external-api-docs-schema
+      # - name: evenergy_currentsession_chargingMode
+      #   value_template: "{{ value_json.chargingMode}}"
+      - name: evenergy_currentsession_chargingType
+        icon: mdi:ev-plug-type2
+        value_template: >
+          {{ value_json.chargingType
+            if states('sensor.evenergy_currentchargesession_id') | int(0) > 0 else none
+            }}
+      - name: evenergy_currentsession_chargingStatus
+        value_template: >
+          {{ value_json.chargingStatus
+            if states('sensor.evenergy_currentchargesession_id') | int(0) > 0 else none
+            }}
+      - name: evenergy_currentsession_totalEnergyDelivered
+        device_class: energy
+        state_class: measurement
+        unit_of_measurement: "kW"
+        icon: mdi:meter-electric-outline
+        value_template: >
+          {{ ((value_json.totalEnergyDelivered | float(none)) | round(2))
+            if (value_json.totalEnergyDelivered is defined) else none
+            }}
+      - name: evenergy_currentsession_totalCost
+        icon: mdi:cash
+        device_class: monetary
+        state_class: measurement
+        # Ev.Energy API returns null when charging has not started
+        # So before charging starts none is returned rather than cost
+        value_template: >
+          {% if (value_json.totalCost is undefined) or
+              (value_json.totalCost.value is undefined ) or
+              (value_json.totalCost.value is none ) %}
+            {% if (states('sensor.evenergy_currentsession_totalEnergyDelivered') is defined) and
+              (states('sensor.evenergy_currentsession_totalEnergyDelivered') | float(-1) == 0) %}
+              {# if energy delivered is zero totalcost is zero, not null #}
+              {{ int(0) }}
+            {% else %}
+              {{ none }}
+            {% endif %}
+          {% elif value_json.totalCost.value | float(-1) < 0 %}
+            {# value is not zero or positive number, return none #}
+            {{ none }} 
+          {% else %}
+            {{ (value_json.totalCost.value | float(0)) | round(2) }}
+          {% endif %}
+      - name: evenergy_currentsession_totalCost_currency
+        # Ev.Energy API returns null when charging has not started
+        # So before charging starts none is returned rather than currency
+        value_template: >
+          {{ none
+            if (value_json is undefined) or
+              (value_json.totalCost is undefined) or
+              (value_json.totalCost.currency is none)
+              (value_json.totalCost.currency == 'null')
+              else value_json.totalCost.currency
+            }}
+      - name: evenergy_currentsession_totalAltCost
+        device_class: monetary
+        state_class: measurement
+        icon: mdi:cash
+        # Ev.Energy API returns null when charging has not started
+        # So before charging starts none is returned rather than 0
+        value_template: >
+          {% if (value_json.totalAltCost is undefined) or
+              (value_json.totalAltCost.value is undefined ) or
+              (value_json.totalAltCost.value is none ) %}
+              {{ none }}
+          {% else %}
+            {{ (value_json.totalAltCost.value | float(0)) | round(2) }}
+          {% endif %}
+
+      - name: evenergy_currentsession_totalCarbonEmissions
+        icon: mdi:molecule-co2
+        state_class: measurement
+        # Ev.Energy API returns null when charging has not started
+        # So before charging starts none is returned rather than 0
+        value_template: >
+          {% if (value_json.totalCarbonEmissions is undefined) or
+              (value_json.totalCarbonEmissions is none ) %}
+            {{ none }} 
+          {% else %}
+            {{ (value_json.totalCarbonEmissions | float(0)) | round(2) }}
+          {% endif %}
+
+      - name: evenergy_currentsession_duration
+        icon: mdi:timer-sand
+        value_template: >
+          {{ value_json.duration
+            if value_json.duration is defined else none
+            }}
+
+  ###########
+  #Charging Logs (current charging session live data)
+  ###########
+  - resource_template: "https://app.ev.energy/api/v1/charging-sessions/{{states('sensor.evenergy_currentchargesession_id')}}/logs/"
+    #Note if currentchargesession_id is none, Ev.Energy API returns HTML error
+    # message and value_json will be undefined
+    scan_interval: 50 # Ev.Energy logs update every minute, always get new value
+    verify_ssl: false
+    headers:
+      Authorization: >
+        Bearer {{ states("sensor.evenergyprivate_token") }}
+    sensor:
+      - name: evenergy_currentsession_chargerate
+        value_template: >
+          {% if value_json is undefined or 
+            (value_json.chargeRate[-1:][0].charging | float (-1) < 0) %}
+            {{ 'none8' }}
+          {% else %}
+            {{ value_json.chargeRate[-1:][0].charging }}
+          {% endif %}
+        device_class: energy
+        unit_of_measurement: "kW"
+      - name: evenergy_currentsession_chargesensor
+        icon: mdi:thermometer-probe
+        value_template: >
+          {{ none 
+            if value_json is undefined or
+            value_json.chargeRate[0].dataSource is undefined else 
+            value_json.chargeRate[0].dataSource
+            }}
+
+      - name: evenergy_currentsession_schedule_begin
+        icon: mdi:clock
+        # Checking for 'value_json is undefined' to address error log warning
+        # Why this error occurs is unclear
+        value_template: >
+          {% if states('sensor.evenergy_currentchargesession_id') | int(0) == 0  %}
+            {{ none }}
+          {% elif states('sensor.evenergy_currentsession_chargingType') == 'smart' %}
+            {{ none
+              if (value_json is undefined) or
+                (value_json.schedule[0].datetime is undefined)
+              else value_json.schedule[0].datetime
+              }}
+          {% else %}
+            {{ 'NA' }}
+          {% endif %}
+      - name: evenergy_currentsession_schedule_end
+        icon: mdi:clock
+        value_template: >
+          {% if states('sensor.evenergy_currentchargesession_id') | int(0) == 0 %}
+            {{ none }}
+          {% elif states('sensor.evenergy_currentsession_chargingType') == 'smart' %}
+            {{ none
+              if ( value_json is undefined ) or 
+                (value_json.schedule[-1:].datetime is undefined)
+              else value_json.schedule[-1:].datetime
+              }}
+          {% else %}
+            {{ 'NA' }}
+          {% endif %}
+
+###########
+#Status summary and private sensors
+###########
+template:
+  #Record the session ID when charging overnight
+  - trigger:
+      - platform: time
+        id: "evenergy save overnightsessionid"
+        at: "23:59"
+    sensor:
+      - name: "evenergyprivate_overnightsessionid"
+        # Consider all the possible options, particually where the car has been
+        # charged and then left plugged in
+        state: >
+          {# Return charge session ID at midnight, or zero if no or old session #}
+          {% set debug = false %}
+          {{ "Debug defined" if debug }}
+          {% if states('sensor.evenergy_currentchargesession_id') | int(0) > 0 %}
+            {{ "currentchargesession_id > 0 - there is a charge session" if debug }}
+            {% if is_state('sensor.evenergy_currentsession_chargingType','smart') %}
+              {{ "Smart charging session" if debug }}
+              {% if (states('sensor.evenergy_currentsession_schedule_chargingend') is defined) and
+                    (states('sensor.evenergy_currentsession_schedule_chargingend') != 'None') and 
+                    (states('sensor.evenergy_currentsession_schedule_chargingend') != "{{ 'NA' }}") %}
+                {% if as_timestamp(states('sensor.evenergy_currentsession_schedule_chargingend')) > as_timestamp(now()) %}
+                  {# Session ends after now, so still in progress return current session id #}
+                  {{ states('sensor.evenergy_currentchargesession_id') }}
+                {% else %}
+                  {# Session ended but car still plugged in, return zero #}
+                  {{ int(0) }}
+                {% endif %}
+              {% else %}
+                {{ "chargesession_schedule_end not defined or is none" if debug }}
+                {# sensor.evenergy_chargesession_schedule_end not defined or is none #}
+                {# or {{ 'NA' }} this is not expected for a smart charge, return none#}
+                {{ int(0) }}
+              {% endif %}
+            {% else %}
+              {{ "Not a Smart charging session" if debug }}
+              {% if states('sensor.evenergy_currentsession_totalEnergyDelivered') | float(-1) == 0 %}
+                {{ "Has not charged at this time" if debug }}
+                {# This is a valid scenerio #}
+                {{ states('sensor.evenergy_currentchargesession_id') }}
+              {% elif states('sensor.evenergy_currentsession_totalEnergyDelivered') | float(-1) > 0 %}
+                {{ "Charging has aleady happened" if debug }}
+                {{ int(0) }}
+              {% else %}
+                {{ "Error currentsession_totalEnergyDelivered not an integer" if debug }}
+                {{ int(0) }}
+              {% endif %}  
+            {% endif %}  
+          {% else %}
+              {{ "No charging session in progress" if debug }}
+              {{ int(0) }}
+          {% endif %}
+
+  - trigger:
+      - platform: time
+        at: "00:00"
+      - platform: state
+        entity_id: binary_sensor.evenergy_charging_inprogress
+        to: on
+    binary_sensor:
+      - name: "evenergy_hascharged_since_midnight"
+        state: "{{ off if trigger.platform == 'time' else on }}"
+
+  - binary_sensor:
+      - name: evenergy_api_loggedin
+        state: "{{ True if is_state('sensor.evenergy_evse','Online') else False }}"
+        #Prefered icon mdi:cloud-check-variant-outline icon available HA in 2022.11.2
+        icon: "{{ 'mdi:cloud' if is_state('sensor.evenergy_evse','Online') else 'mdi:cloud-alert' }}"
+      - name: evenergy_charger_online
+        state: "{{ True if is_state('sensor.evenergy_charger_connectivity','Online') else False }}"
+        icon: "{{ 'mdi:check-network-outline' if is_state('sensor.evenergy_charger_connectivity','Online') else 'mdi:close-network' }}"
+      - name: evenergy_ev_pluggedin
+        state: >
+          {{ True
+            if is_state('sensor.evenergy_charger_chargerstatus','CONNECTED') or
+              is_state('sensor.evenergy_charger_chargerstatus','CHARGING')
+            else False }}
+        icon: >
+          {{ 'mdi:ev-station'
+            if is_state('sensor.evenergy_charger_chargerstatus','CONNECTED') or
+              is_state('sensor.evenergy_charger_chargerstatus','CHARGING')
+          else 'mdi:power-plug-off' }}
+
+      - name: evenergy_charging_inprogress
+        state: "{{True if is_state('sensor.evenergy_charger_chargerstatus','CHARGING') else False }}"
+        icon: "{{'mdi:battery-charging-medium' if is_state('sensor.evenergy_charger_chargerstatus','CHARGING') else 'mdi:battery-off-outline' }}"
+
+  - sensor:
+      #evenergy_token
+      - name: evenergyprivate_token
+        state: !secret evenergy_Auth
+        icon: mdi:lock
+
+        #Compute an overall status (and colour) for the charger and car
+      - name: evenergy_status
+        icon: mdi:ev-station
+        state: >
+          {% if is_state('binary_sensor.evenergy_charging_inprogress','on') %} {{'Charging In Progress'}}
+          {% elif is_state('binary_sensor.evenergy_ev_pluggedin','on') %}      {{'Plugged In'}}
+          {% elif is_state('binary_sensor.evenergy_charger_online','on') %}    {{'NOT Plugged In'}}
+          {% elif is_state('binary_sensor.evenergy_api_loggedin','on') %}      {{'Fault - Charger OFFLine'}}
+          {% else %} 'Error-StateUndefined' 
+          {% endif %}
+      - name: evenergy_status_colour
+        icon: mdi:ev-station
+        state: >
+          {% if is_state('binary_sensor.evenergy_charging_inprogress','on') %} {{'Blue'}}
+          {% elif is_state('binary_sensor.evenergy_ev_pluggedin','on') %}      {{'Green'}}
+          {% elif is_state('binary_sensor.evenergy_charger_online','on') %}    {{'Grey'}}
+          {% elif is_state('binary_sensor.evenergy_api_loggedin','on') %}      {{'Red'}}
+          {% else %} 'Red' 
+          {% endif %}
+
+      #Charging schedule and scheduled charging times
+      - name: evenergy_currentsession_schedule_chargingstart
+        icon: mdi:clock
+        state: >
+          {% if states('sensor.evenergy_currentchargesession_id') | int(0) == 0 %}
+            none
+          {% elif states('sensor.evenergy_currentsession_chargingType') == 'smart' %}
+            {{ state_attr('sensor.evenergyprivate_currentchargesession_chargeschedule', 'startTime') }}
+          {% else %}
+            {{ 'NA' }}
+          {% endif %}
+      - name: evenergy_currentsession_schedule_chargingend
+        icon: mdi:clock
+        state: >
+          {% if states('sensor.evenergy_currentchargesession_id') | int(0) == 0 %}
+            none
+          {% elif states('sensor.evenergy_currentsession_chargingType') == 'smart' %}
+            {{ state_attr('sensor.evenergyprivate_currentchargesession_chargeschedule', 'endTime') }}
+          {% else %}
+            {{ 'NA' }}
+          {% endif %}
+      - name: evenergy_currentsession_schedule_chargingcontiguous
+        icon: mdi:clock
+        state: >
+          {% if states('sensor.evenergy_currentchargesession_id') | int(0) == 0 %}
+            {{ none }}
+          {% elif states('sensor.evenergy_currentsession_chargingType') == 'smart' %}
+            {{ state_attr('sensor.evenergyprivate_currentchargesession_chargeschedule', 'contiguous') }}
+          {% else %}
+            {{ 'NA' }}
+          {% endif %}
+
+      - name: evenergy_previoussession_schedule_chargingstart
+        icon: mdi:clock
+        state: >
+          {% if states('sensor.evenergy_previouschargesession_id') | int(0) == 0 %}
+            {# Would there ever be a charger that has not been used before? #}
+            {# As there is no id for it return none as we have no data #}
+            {{ none }}
+          {% elif states('sensor.evenergy_previoussession_chargingType') == 'smart' %}
+            {{ state_attr('sensor.evenergyprivate_previouschargesession_chargeschedule', 'startTime') 
+              if state_attr('sensor.evenergyprivate_previouschargesession_chargeschedule', 'startTime') is defined
+              else none
+              }}
+          {% else %}
+            {{ 'NA' }}
+          {% endif %}
+      - name: evenergy_previoussession_schedule_chargingend
+        icon: mdi:clock
+        state: >
+          {% if states('sensor.evenergy_previouschargesession_id') | int(0) == 0 %}
+            {{ none }}
+          {% elif states('sensor.evenergy_previoussession_chargingType') == 'smart' %}
+            {{ state_attr('sensor.evenergyprivate_previouschargesession_chargeschedule', 'endTime') 
+              if state_attr('sensor.evenergyprivate_previouschargesession_chargeschedule', 'endTime') is defined
+              else none
+              }}
+          {% else %}
+            {{ 'NA' }}
+          {% endif %}
+      - name: evenergy_previoussession_schedule_chargingcontiguous
+        icon: mdi:clock
+        state: >
+          {% if states('sensor.evenergy_previouschargesession_id') | int(0) == 0 %}
+            {{ none }}
+          {% elif states('sensor.evenergy_previoussession_chargingType') == 'smart' %}
+            {{ state_attr('sensor.evenergyprivate_previouschargesession_chargeschedule', 'contiguous') 
+              if state_attr('sensor.evenergyprivate_previouschargesession_chargeschedule', 'contiguous') is defined
+              else none
+              }}
+          {% else %}
+            {{ 'NA' }}
+          {% endif %}
+
+      - name: evenergy_currentsession_startpretty
+        icon: mdi:clock
+        state: >
+          {{ none
+            if states('sensor.evenergy_currentsession_start') == 'None' else 
+            as_timestamp(states('sensor.evenergy_currentsession_start')) | timestamp_custom('%H:%M %d%b')
+            }}
+      - name: evenergy_previoussession_startpretty
+        icon: mdi:clock
+        state: >
+          {{as_timestamp(states('sensor.evenergy_previoussession_start')) | timestamp_custom('%H:%M %d%b')
+            if states('sensor.evenergy_previoussession_start') not in ('unknown') else none
+            }}
+
+      - name: evenergy_currentsession_endpretty
+        icon: mdi:clock
+        state: >
+          {{ none
+            if states('sensor.evenergy_currentsession_end') == 'None' else 
+            as_timestamp(states('sensor.evenergy_currentsession_end')) | timestamp_custom('%H:%M %d%b')
+            }}
+
+      - name: evenergy_previoussession_endpretty
+        icon: mdi:clock
+        state: >
+          {{ as_timestamp(states('sensor.evenergy_previoussession_end')) | timestamp_custom('%H:%M %d%b') 
+            if (states('sensor.evenergy_previoussession_end') is defined) and
+              (states('sensor.evenergy_previoussession_end') not in ('unavailable', 'unknown','None')) and
+              (states('sensor.evenergy_previoussession_end') !='')
+            else none
+            }}
+
+      #Compute energy used overnight, if car charge started overnight
+      - name: "evenergy_energy_overnight"
+        device_class: energy
+        unit_of_measurement: "kW"
+        icon: mdi:meter-electric-outline
+        state: >
+          {% if states('sensor.evenergyprivate_overnightsessionid') is defined %}
+            {% if states('sensor.evenergyprivate_overnightsessionid') != 0 %}  
+              {#The car was plugged in a midnight #}
+              {% if states('sensor.evenergy_currentsession') == states('sensor.evenergyprivate_overnightsessionid')  %}
+                {# This is the same charge session as at midnight #}
+                {# Return the value of this session #}
+                {{ states('sensor.evenergy_currentsession_totalEnergyDelivered')  | float(none) | round(1) }}
+              {% else %}
+                {# Different charging session in progress #}
+                {# Return previous value #}
+                {{ states('sensor.evenergy_energy_overnight') | float(none) }}
+              {% endif %}
+            {% else %}
+              {# Either the car was not plugged in at midnight or an ended session was in progress #}
+              {# Return zero #}
+              {{ float(0) }}
+            {% endif %}
+          {% else %}
+            {# sensor.evenergyprivate_overnightsessionid is not defined #}
+            {# There is a problem, signal the issue by returning none #}
+            {{ none }}
+          {% endif %}
+      - name: "evenergy_energy_overnightcost"
+        device_class: monetary
+        state_class: measurement
+        icon: mdi:cash
+        state: >
+          {% if states('sensor.evenergyprivate_overnightsessionid') is defined %}
+            {% if states('sensor.evenergyprivate_overnightsessionid') != 0 %}  
+              {#The car was plugged in a midnight #}
+              {% if states('sensor.evenergy_currentsession') == states('sensor.evenergyprivate_overnightsessionid')  %}
+                {# This is the same charge session as at midnight #}
+                {# Return the value of this session #}
+                {{ states('sensor.evenergy_currentsession_totalcost')  | float(none) | round(2) }}
+              {% else %}
+                {# Different charging session in progress #}
+                {# Return previous value #}
+                {{ states('sensor.evenergy_energy_overnightcost') | float(none) }}
+              {% endif %}
+            {% else %}
+              {# Either the car was not plugged in at midnight or an ended session was in progress #}
+              {# Return zero #}
+              {{ float(0) }}
+            {% endif %}
+          {% else %}
+            {# sensor.evenergyprivate_overnightsessionid is not defined #}
+            {# There is a problem, signal the issue by returning none #}
+            {{ none }}
+          {% endif %}
+      - name: "evenergyprivate_version"
+        icon: mdi:script-outline
+        state: "V2.0 26/01/2023"
