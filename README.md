@@ -234,8 +234,3 @@ There are code snippets for the interface display in examples
 
 ### examples\OvernightChargeAndCost.yaml
 ![Overnight Charge](/images/ChargeAndCost.jpg "Snippet showing energy used and cost of overnight charge")
-
-
-
-**BUG**: More examples to be added
-
