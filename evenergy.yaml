@@ -46,7 +46,7 @@
 #  There needs to be an entry in secrets.yaml for:
 #    evenergy_Auth
 #
-#  The Ev.Energy REST API is documented and maitain by EV.Energy
+#  The Ev.Energy REST API is documented and maintained by EV.Energy
 
 #DESIGN PRINCIPLEs
 #  Use the 'most native' HA functionality to make the code
@@ -54,7 +54,7 @@
 #    Curl, and bash utilitys like grep, could have also
 #    been used but are much more complex for a user to understand and maintain.
 #  Copiously comment, again to help a user understand and
-#    maitain the functionality
+#    maintain the functionality
 #  Longer, but simipler to read, functions rather than complex syntax
 #  Names that clearly document their purpose (makes them much longer, which
 #    causes different problems, sorry.)
@@ -68,14 +68,14 @@
 ###########
 #Check for Ev.Energy API
 ###########
-binary_sensor:
-  - platform: command_line
-    command: 'curl --ssl-no-revoke -I https://app.ev.energy/o/token > /dev/null 2>&1 && echo "on" || echo "off"'
-    name: "evenergy_api_online"
-    device_class: connectivity
-    scan_interval: 60 #seconds
-    payload_on: "on"
-    payload_off: "off"
+command_line:
+  - binary_sensor:
+      command: 'curl --ssl-no-revoke -I https://app.ev.energy/o/token > /dev/null 2>&1 && echo "on" || echo "off"'
+      name: "evenergy_api_online"
+      device_class: connectivity
+      scan_interval: 60 #seconds
+      payload_on: "on"
+      payload_off: "off"
 
 #NOTE OTHER BINARY SENSORS defined at Template:
 
@@ -152,39 +152,38 @@ automation:
         entity_id: sensor.evenergyprivate_currentchargesession_chargeschedule
 
 #Charge schedule sensor (using python script)
-sensor:
   # Use python_scripts/evenergycs.py to fetch and parse charging
   # schedule (script required due to REST integration 255 character limiation)
-  - platform: command_line
-    name: evenergyprivate_previouschargesession_chargeschedule
-    scan_interval: 31536000 #1 year, is called/ triggered by automation
-    command: "python3 /config/python_scripts/evenergycs.py {{states('sensor.evenergyprivate_token')}} {{states('sensor.evenergy_previouschargesession_id')}}"
-    json_attributes:
-      - startTime
-      - endTime
-      - contiguous
-      - parsed
-    value_template: "{{ value_json.parsed }}"
+  - sensor: 
+      name: evenergyprivate_previouschargesession_chargeschedule
+      scan_interval: 31536000 #1 year, is called/ triggered by automation
+      command: "python3 /config/python_scripts/evenergycs.py {{states('sensor.evenergyprivate_token')}} {{states('sensor.evenergy_previouschargesession_id')}}"
+      json_attributes:
+        - startTime
+        - endTime
+        - contiguous
+        - parsed
+      value_template: "{{ value_json.parsed }}"
 
     #Call script to get values for *current* charge session
     #sensor is called by automation when sensor.evenergy_currentchargesession_id is defined
-  - platform: command_line
-    name: evenergyprivate_currentchargesession_chargeschedule
-    scan_interval: 31536000 #1 year, is called/ trigger by automation
-    command: "python3 /config/python_scripts/evenergycs.py {{states('sensor.evenergyprivate_token')}} {{states('sensor.evenergy_currentchargesession_id')}}"
-    json_attributes:
-      - startTime
-      - endTime
-      - contiguous
-      - parsed
-    value_template: "{{ value_json.parsed }}"
+  - sensor:
+      name: evenergyprivate_currentchargesession_chargeschedule
+      scan_interval: 31536000 #1 year, is called/ trigger by automation
+      command: "python3 /config/python_scripts/evenergycs.py {{states('sensor.evenergyprivate_token')}} {{states('sensor.evenergy_currentchargesession_id')}}"
+      json_attributes:
+        - startTime
+        - endTime
+        - contiguous
+        - parsed
+      value_template: "{{ value_json.parsed }}"
 
-  - platform: command_line
-    name: evenergyprivate_md5
-    scan_interval: 300 #Change to 86400
-    command: "md5sum evenergy.yaml | awk '{print $1;}'"
-    #command: "md5sum /root/config/evenergy.yaml | awk '{print $1;}'"
-    #icon: mdi:fingerprint
+  - sensor:
+      name: evenergyprivate_md5
+      scan_interval: 300 #Change to 86400
+      command: "md5sum evenergy.yaml | awk '{print $1;}'"
+      #command: "md5sum /root/config/evenergy.yaml | awk '{print $1;}'"
+      #icon: mdi:fingerprint
 
 rest:
   ###########
@@ -237,7 +236,7 @@ rest:
   ###########
   #Current and Previous charging session IDs
   ###########
-  # Current charge session is only defined when the charger is comment to the
+  # Current charge session is only defined when the charger is connected to the
   # car. That is sensor.evenergy_charger_chargerStatus is CONNECTED
   - resource: https://app.ev.energy/api/v1/charging-sessions/?limit=2
     scan_interval: 30
